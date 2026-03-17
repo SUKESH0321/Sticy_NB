@@ -1,0 +1,5 @@
+{
+  "name": "Desktop Sticky Notes",
+  "description": "A persistent, draggable sticky notes board.",
+  "requestFramePermissions": []
+}
