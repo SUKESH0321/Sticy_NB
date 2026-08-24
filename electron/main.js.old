@@ -1,5 +1,5 @@
-import { app, BrowserWindow } from 'electron';
-import * as path from 'path';
+﻿import { app, BrowserWindow } from 'electron';
+import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -9,10 +9,10 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1024,
     height: 768,
-        webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false
+    }
   });
 
   const isDev = process.env.NODE_ENV === 'development';
@@ -32,3 +32,4 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
+
