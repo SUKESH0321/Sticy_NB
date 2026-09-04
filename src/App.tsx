@@ -1,182 +1,199 @@
-import { useState, useEffect } from 'react';
-import { motion, useMotionValue } from 'motion/react';
-import { Plus, X, GripHorizontal, Palette } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Plus, X, Palette, ListX } from 'lucide-react';
 
-type Note = {
-  id: string;
-  text: string;
-  color: string;
-  x: number;
-  y: number;
-  z: number;
-};
+/**
+ * Single, standalone sticky-note window.
+ * Identified by the ?noteId= query param injected by the Electron main process,
+ * and communicates with it exclusively through the window.api IPC bridge.
+ */
 
+// Tailwind swatches the main process persists as the note `color`.
 const COLORS = [
   'bg-yellow-200',
   'bg-pink-200',
   'bg-blue-200',
   'bg-green-200',
   'bg-purple-200',
-  'bg-orange-200'
+  'bg-orange-200',
 ];
 
-export default function App() {
-  const [notes, setNotes] = useState<Note[]>([]);
-  const [maxZ, setMaxZ] = useState(1);
-  const [isLoaded, setIsLoaded] = useState(false);
+const DEBOUNCE_MS = 500;
 
-  // Load from local storage
-  useEffect(() => {
-    const saved = localStorage.getItem('sticky-notes');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        setNotes(parsed);
-        const highestZ = Math.max(...parsed.map((n: Note) => n.z), 0);
-        setMaxZ(highestZ + 1);
-      } catch (e) {
-        console.error("Failed to load notes");
-      }
-    }
-    setIsLoaded(true);
-  }, []);
+// Electron app-region styles. Only the header bar is the OS drag handle;
+// every interactive control inside it must opt out with 'no-drag' or the
+// OS swallows the clicks — exactly the "close/add unclickable" bug.
+const DRAG_REGION = { WebkitAppRegion: 'drag' } as any;
+const NO_DRAG_REGION = { WebkitAppRegion: 'no-drag' } as any;
 
-  // Save to local storage
-  useEffect(() => {
-    if (isLoaded) {
-      localStorage.setItem('sticky-notes', JSON.stringify(notes));
-    }
-  }, [notes, isLoaded]);
-
-  const addNote = () => {
-    const newNote: Note = {
-      id: crypto.randomUUID(),
-      text: '',
-      color: COLORS[0],
-      x: window.innerWidth / 2 - 128 + (Math.random() * 40 - 20), // Center roughly
-      y: window.innerHeight / 2 - 128 + (Math.random() * 40 - 20),
-      z: maxZ
+// Minimal ambient typing so this file compiles even when run outside Electron.
+declare global {
+  interface Window {
+    api?: {
+      createNote: (x?: number | null, y?: number | null) => void;
+      updateNote: (id: string, payload: { text?: string; color?: string }) => void;
+      deleteNote: (id: string) => void;
+      deleteAllNotes: () => void;
     };
-    setNotes([...notes, newNote]);
-    setMaxZ(maxZ + 1);
-  };
-
-  const updateNote = (id: string, updates: Partial<Note>) => {
-    setNotes(notes.map(n => n.id === id ? { ...n, ...updates } : n));
-  };
-
-  const deleteNote = (id: string) => {
-    setNotes(notes.filter(n => n.id !== id));
-  };
-
-  const bringToFront = (id: string) => {
-    updateNote(id, { z: maxZ });
-    setMaxZ(maxZ + 1);
-  };
-
-  if (!isLoaded) return null;
-
-  return (
-    <div className="relative w-screen h-screen overflow-hidden bg-stone-100 bg-[radial-gradient(#d6d3d1_1px,transparent_1px)] [background-size:24px_24px]">
-      {/* Toolbar */}
-      <div className="absolute top-6 left-6 z-[9999]">
-        <button
-          onClick={addNote}
-          className="flex items-center gap-2 px-5 py-3 bg-stone-900 text-white rounded-full shadow-xl hover:bg-stone-800 transition-all hover:scale-105 active:scale-95 font-medium"
-        >
-          <Plus size={20} />
-          <span>New Note</span>
-        </button>
-      </div>
-
-      {/* Notes */}
-      {notes.map(note => (
-        <StickyNote
-          key={note.id}
-          note={note}
-          updateNote={updateNote}
-          deleteNote={deleteNote}
-          bringToFront={bringToFront}
-        />
-      ))}
-    </div>
-  );
+  }
 }
 
-function StickyNote({ note, updateNote, deleteNote, bringToFront }: {
-  note: Note;
-  updateNote: (id: string, updates: Partial<Note>) => void;
-  deleteNote: (id: string) => void;
-  bringToFront: (id: string) => void;
-}) {
-  const x = useMotionValue(note.x);
-  const y = useMotionValue(note.y);
+export default function App() {
+  const [noteId] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('noteId')?.trim() ?? '';
+  });
+
+  const [text, setText] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const savedText = params.get('text');
+    return savedText ? decodeURIComponent(savedText) : '';
+  });
+
+  const [color, setColor] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const savedColor = params.get('color');
+    return savedColor ? decodeURIComponent(savedColor) : COLORS[0];
+  });
+  
+
+
   const [isEditingColor, setIsEditingColor] = useState(false);
 
+  // Ref used by the debouncer to cancel a pending save on the next change.
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushPendingSave = useCallback(() => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+  }, []);
+
+  // Persist whenever the note's content changes — debounced by 500ms so rapid
+  // typing only writes once the user pauses.
+  useEffect(() => {
+    if (!noteId) return;
+
+    flushPendingSave();
+    debounceRef.current = setTimeout(() => {
+      debounceRef.current = null;
+      window.api?.updateNote(noteId, { text, color });
+    }, DEBOUNCE_MS);
+
+    return flushPendingSave;
+  }, [text, color, noteId, flushPendingSave]);
+
+  // Spawn a brand-new sticky note window via the main process.
+  const handleCreateNote = () => {
+    window.api?.createNote(null, null);
+  };
+
+  // Request the main process to delete this note and close its window.
+  const handleDeleteNote = () => {
+    // noteId is always a non-empty string for windows opened by the main
+    // process (it injects ?noteId=). Guard anyway so we never send null or
+    // undefined across the IPC bridge.
+    if (!noteId) {
+      console.warn('deleteNote aborted: no valid noteId in the URL.');
+      return;
+    }
+    window.api?.deleteNote(noteId);
+  };
+
   return (
-    <motion.div
-      drag
-      dragMomentum={false}
-      onDragStart={() => bringToFront(note.id)}
-      onDragEnd={() => {
-        updateNote(note.id, { x: x.get(), y: y.get() });
-      }}
-      style={{ x, y, zIndex: note.z, position: 'absolute' }}
-      className={`w-64 min-h-64 rounded-2xl shadow-xl flex flex-col ${note.color} border border-black/5 overflow-hidden`}
-      onPointerDown={() => bringToFront(note.id)}
+    <div
+      className={`h-screen w-screen flex flex-col overflow-hidden rounded-2xl border border-black/5 shadow-xl select-none ${color}`}
     >
-      {/* Header / Drag Handle */}
-      <div className="flex items-center justify-between p-3 cursor-grab active:cursor-grabbing bg-black/5 hover:bg-black/10 transition-colors group">
+      {/* Header / Drag handle — allows moving the whole Electron window */}
+      <div
+        className="flex items-center justify-between gap-2 bg-black/5 px-3 py-2.5 shrink-0"
+        style={DRAG_REGION}
+      >
         <div className="flex items-center gap-2">
-          <GripHorizontal size={16} className="text-black/30 group-hover:text-black/50 transition-colors" />
+          {/* Color picker toggle */}
           <div className="relative">
             <button
+              type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                setIsEditingColor(!isEditingColor);
+                setIsEditingColor((v) => !v);
               }}
+              title="Change color"
               className="p-1.5 hover:bg-black/10 rounded-md text-black/40 hover:text-black/70 transition-colors"
-              title="Change Color"
+              style={NO_DRAG_REGION}
             >
-              <Palette size={14} />
+              <Palette size={16} />
             </button>
+
             {isEditingColor && (
-              <div className="absolute top-full left-0 mt-2 flex gap-1.5 p-2 bg-white rounded-xl shadow-xl border border-black/10 z-10">
-                {COLORS.map(c => (
+              <div
+                className="absolute top-full left-0 mt-2 flex gap-1.5 bg-white rounded-xl px-2 py-2 shadow-xl border border-black/10"
+                style={NO_DRAG_REGION}
+              >
+                {COLORS.map((c) => (
                   <button
                     key={c}
+                    type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      updateNote(note.id, { color: c });
+                      setColor(c);
                       setIsEditingColor(false);
                     }}
-                    className={`w-6 h-6 rounded-full ${c} border border-black/10 hover:scale-110 transition-transform`}
+                    title={c}
+                    className={`size-6 rounded-full ${c} border border-black/10 hover:scale-110 transition-transform`}
+                    style={NO_DRAG_REGION}
                   />
                 ))}
               </div>
             )}
           </div>
         </div>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            deleteNote(note.id);
-          }}
-          className="p-1.5 hover:bg-black/10 rounded-md text-black/40 hover:text-black/70 transition-colors"
-          title="Delete Note"
-        >
-          <X size={16} />
-        </button>
+
+        <div className="flex items-center gap-2">
+          {/* Close All: closes every open note window and clears storage */}
+          <button
+            type="button"
+            onClick={() => window.api?.deleteAllNotes()}
+            title="Close all notes"
+            className="p-1.5 hover:bg-black/10 rounded-md text-black/40 hover:text-red-600 transition-colors"
+            style={NO_DRAG_REGION}
+          >
+            <ListX size={16} />
+          </button>
+
+          {/* Close: deletes this note via IPC */}
+          <button
+            type="button"
+            onClick={handleDeleteNote}
+            title="Delete note"
+            className="p-1.5 hover:bg-red-200/70 rounded-md text-black/40 hover:text-red-600 transition-colors"
+            style={NO_DRAG_REGION}
+          >
+            <X size={16} />
+          </button>
+        </div>
       </div>
 
-      {/* Content */}
+      {/* Note body */}
       <textarea
-        value={note.text}
-        onChange={(e) => updateNote(note.id, { text: e.target.value })}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
         placeholder="Write something..."
-        className="flex-1 w-full p-5 bg-transparent resize-none outline-none text-stone-800 placeholder:text-stone-800/40 font-medium leading-relaxed"
-        onPointerDown={(e) => e.stopPropagation()} // Prevent drag when clicking text
+        className="flex-1 w-full resize-none outline-none bg-transparent p-4 text-stone-800 placeholder:text-stone-800/40 font-medium leading-relaxed"
+        style={NO_DRAG_REGION}
       />
-    </motion.div>
+
+      {/* New-note action (also no-drag so it stays clickable) */}
+      <button
+        type="button"
+        onClick={handleCreateNote}
+        title="New note"
+        className="flex items-center justify-center gap-2 shrink-0 border-t-[6px] border-black/5 bg-black/5 py-2 text-black/50 hover:text-black hover:bg-black/10 transition-colors font-medium text-sm"
+        style={NO_DRAG_REGION}
+      >
+        <Plus size={16} />
+        New Note
+      </button>
+    </div>
   );
 }

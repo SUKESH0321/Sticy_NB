@@ -1,6 +1,25 @@
 @import "tailwindcss";
 
+/**
+ * Transparent window background.
+ * The Electron BrowserWindow is created with `transparent: true`, and the note
+ * itself is the only visible element — so the html/body must let the desktop
+ * show through everywhere except the note rectangle.
+ */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent !important;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+}
+
 body {
   overflow: hidden;
-  background-color: #f5f5f4;
 }
