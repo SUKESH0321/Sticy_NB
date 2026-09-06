@@ -17,6 +17,25 @@ const DEFAULT_NOTE_SIZE = { width: 300, height: 300 };
 const NEW_NOTE_OFFSET = 30;
 
 /**
+ * Resolves the absolute path to the application icon (icon.ico).
+ *
+ * The path differs between the two runtimes:
+ *  - Development: Vite serves files from `public/` at the URL root, so the
+ *    icon lives at `<projectRoot>/public/icon.ico`.
+ *  - Production: `vite build` copies every file inside `public/` verbatim
+ *    into `dist/` (the default Vite `publicDir` behavior, and nothing in
+ *    vite.config.ts disables it), so the packaged app finds the same icon
+ *    at `<projectRoot>/dist/icon.ico` (reached from `electron/` via `../dist`).
+ *
+ * @returns {string} absolute path to the .ico file for the current runtime
+ */
+function getAppIconPath() {
+  return app.isPackaged
+    ? path.join(__dirname, '../dist/icon.ico')
+    : path.join(__dirname, '../public/icon.ico');
+}
+
+/**
  * Reads notes.json and returns the persisted notes array.
  * Returns an empty array when the file does not exist yet.
  * @returns {Array<object>}
@@ -64,6 +83,7 @@ function createNoteWindow(id, x, y, text = '', color = 'bg-yellow-200') {
     y: y,
     frame: false,
     transparent: true,
+    icon: getAppIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -118,6 +138,11 @@ function handleCreateNote(x = null, y = null) {
 
 // On startup, restore every persisted note or create a fresh one.
 app.whenReady().then(() => {
+  // Give the app a stable Windows App User Model ID so the taskbar always
+  // groups/pins it under our custom icon (not the generic Electron one),
+  // both in development and in the packaged build.
+  if (process.platform === 'win32') app.setAppUserModelId('com.stikynotes.app');
+
   const notes = readNotes();
 
   if (notes.length === 0) {

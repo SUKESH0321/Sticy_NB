@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "electron:dev": "cross-env NODE_ENV=development concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron:build": "npm run build && electron-packager . \"Stiky Notes\" --platform=win32 --arch=x64 --out=release --overwrite",
+    "electron:build": "npm run build && electron-packager . \"Stiky Notes V1.02\" --platform=win32 --arch=x64 --icon=public/icon.ico --out=release --overwrite",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
