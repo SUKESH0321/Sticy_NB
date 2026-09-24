@@ -33,6 +33,8 @@ declare global {
       updateNote: (id: string, payload: { text?: string; color?: string }) => void;
       deleteNote: (id: string) => void;
       deleteAllNotes: () => void;
+      onAutoColor: (callback: (color: string) => void) => void;
+      onAutoTag: (callback: (tag: string) => void) => void;
     };
   }
 }
@@ -55,6 +57,11 @@ export default function App() {
     return savedColor ? decodeURIComponent(savedColor) : COLORS[0];
   });
   
+  const [tag, setTag] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const savedTag = params.get('tag');
+    return savedTag ? decodeURIComponent(savedTag) : '';
+  });
 
 
   const [isEditingColor, setIsEditingColor] = useState(false);
@@ -67,6 +74,18 @@ export default function App() {
       clearTimeout(debounceRef.current);
       debounceRef.current = null;
     }
+  }, []);
+
+  useEffect(() => {
+    window.api?.onAutoColor?.((newColor) => {
+      setColor(newColor);
+    });
+  }, []);
+
+  useEffect(() => {
+    window.api?.onAutoTag?.((newTag) => {
+      setTag(newTag);
+    });
   }, []);
 
   // Persist whenever the note's content changes — debounced by 500ms so rapid
@@ -147,6 +166,11 @@ export default function App() {
               </div>
             )}
           </div>
+          {tag && (
+            <span className="text-xs font-bold text-black/40 bg-black/5 px-2 py-1 rounded-md" style={NO_DRAG_REGION}>
+              {tag}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2">

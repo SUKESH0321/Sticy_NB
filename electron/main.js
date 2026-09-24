@@ -2,6 +2,19 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
+const { pipeline, env } = require('@xenova/transformers');
+
+env.allowLocalModels = false;
+
+let classifier = null;
+async function loadClassifier() {
+  try {
+    classifier = await pipeline('zero-shot-classification', 'Xenova/mobilebert-uncased-mnli');
+    console.log('Classifier loaded successfully');
+  } catch (error) {
+    console.error('Failed to load classifier:', error);
+  }
+}
 
 // JSON file that persists all notes across sessions.
 const storePath = path.join(app.getPath('userData'), 'notes.json');
@@ -75,7 +88,7 @@ const activeNotes = new Map();
  * @param {number|null} y     optional y coordinate (defaults to OS centering)
  */
 
-function createNoteWindow(id, x, y, text = '', color = 'bg-yellow-200') {
+function createNoteWindow(id, x, y, text = '', color = 'bg-yellow-200', tag = '') {
   const win = new BrowserWindow({
     width: 300,
     height: 300,
@@ -94,7 +107,8 @@ function createNoteWindow(id, x, y, text = '', color = 'bg-yellow-200') {
   // Safely encode the text and color into the URL
   const encodedText = encodeURIComponent(text);
   const encodedColor = encodeURIComponent(color);
-  const queryParams = `noteId=${id}&text=${encodedText}&color=${encodedColor}`;
+  const encodedTag = encodeURIComponent(tag);
+  const queryParams = `noteId=${id}&text=${encodedText}&color=${encodedColor}&tag=${encodedTag}`;
   if (app.isPackaged) {
       // In production, load the physical HTML file from Vite's build folder
       win.loadFile(path.join(__dirname, '../dist/index.html'), { search: queryParams });
@@ -122,6 +136,7 @@ function handleCreateNote(x = null, y = null) {
     id: randomUUID(),
     text: '',
     color: DEFAULT_NOTE_COLOR,
+    tag: '',
     x: x ?? null,
     y: y ?? null,
     ...DEFAULT_NOTE_SIZE,
@@ -131,7 +146,7 @@ function handleCreateNote(x = null, y = null) {
   writeNotes(notes);
 
   // Pass the text and color here!
-  createNoteWindow(newNote.id, x, y, newNote.text, newNote.color);
+  createNoteWindow(newNote.id, x, y, newNote.text, newNote.color, newNote.tag);
 }
 
 // ... (leave your IPC listeners alone here) ...
@@ -143,6 +158,8 @@ app.whenReady().then(() => {
   // both in development and in the packaged build.
   if (process.platform === 'win32') app.setAppUserModelId('com.stikynotes.app');
 
+  loadClassifier();
+
   const notes = readNotes();
 
   if (notes.length === 0) {
@@ -152,7 +169,7 @@ app.whenReady().then(() => {
     // Restore each persisted note into its own window.
     for (const note of notes) {
       // YOU WERE MISSING THIS: Pass note.text and note.color into the window!
-      createNoteWindow(note.id, note.x ?? null, note.y ?? null, note.text, note.color);
+      createNoteWindow(note.id, note.x ?? null, note.y ?? null, note.text, note.color, note.tag || '');
     }
   }
 });
@@ -175,7 +192,7 @@ ipcMain.on('note:create', (_event, x, y) => {  // Accept explicit coordinates fr
   handleCreateNote(spawnX, spawnY);
 });
 
-ipcMain.on('note:update', (_event, id, payload = {}) => {
+ipcMain.on('note:update', async (_event, id, payload = {}) => {
   const notes = readNotes();
   const note = notes.find((n) => n.id === id);
   if (!note) return;
@@ -183,11 +200,29 @@ ipcMain.on('note:update', (_event, id, payload = {}) => {
   // Merge the new properties (text, color, position, dimensions, ...).
   Object.assign(note, payload);
 
+  const win = activeNotes.get(id);
+
+  if (payload.text !== undefined && payload.text.length > 15 && classifier) {
+    try {
+      const output = await classifier(payload.text, ['study', 'school', 'work', 'personal']);
+      const winningLabel = output.labels[0];
+      const generatedTag = `#${winningLabel}`;
+
+      if (generatedTag !== note.tag) {
+        note.tag = generatedTag;
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('note:auto-tag', generatedTag);
+        }
+      }
+    } catch (err) {
+      console.error('Classification error:', err);
+    }
+  }
+
   // If the note's position or dimensions changed, sync the physical window.
   const needsBoundsSync = ['x', 'y', 'width', 'height'].some(
     (key) => payload[key] !== undefined,
   );
-  const win = activeNotes.get(id);
   if (needsBoundsSync && win && !win.isDestroyed()) {
     const bounds = win.getBounds();
     win.setBounds({
