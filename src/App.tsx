@@ -35,6 +35,7 @@ declare global {
       deleteAllNotes: () => void;
       onAutoColor: (callback: (color: string) => void) => void;
       onAutoTag: (callback: (tag: string) => void) => void;
+      onReminderSet: (callback: (dateStr: string) => void) => void;
     };
   }
 }
@@ -65,6 +66,7 @@ export default function App() {
 
 
   const [isEditingColor, setIsEditingColor] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Ref used by the debouncer to cancel a pending save on the next change.
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -86,6 +88,19 @@ export default function App() {
     window.api?.onAutoTag?.((newTag) => {
       setTag(newTag);
     });
+  }, []);
+
+  useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout>;
+    window.api?.onReminderSet?.((dateStr) => {
+      setToastMessage(`Reminder set for ${dateStr}`);
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        setToastMessage(null);
+      }, 3000);
+    });
+
+    return () => clearTimeout(timeoutId);
   }, []);
 
   // Persist whenever the note's content changes — debounced by 500ms so rapid
@@ -123,6 +138,11 @@ export default function App() {
     <div
       className={`h-screen w-screen flex flex-col overflow-hidden rounded-2xl border border-black/5 shadow-xl select-none ${color}`}
     >
+      {toastMessage && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/75 text-white text-xs px-3 py-1.5 rounded-full z-50 pointer-events-none shadow-md">
+          {toastMessage}
+        </div>
+      )}
       {/* Header / Drag handle — allows moving the whole Electron window */}
       <div
         className="flex items-center justify-between gap-2 bg-black/5 px-3 py-2.5 shrink-0"

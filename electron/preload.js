@@ -6,5 +6,6 @@ contextBridge.exposeInMainWorld('api', {
   deleteNote: (id) => ipcRenderer.send('note:delete', id),
   deleteAllNotes: () => ipcRenderer.send('note:deleteAll'),
   onAutoColor: (callback) => ipcRenderer.on('note:auto-color', (_event, color) => callback(color)),
-  onAutoTag: (callback) => ipcRenderer.on('note:auto-tag', (_event, tag) => callback(tag))
+  onAutoTag: (callback) => ipcRenderer.on('note:auto-tag', (_event, tag) => callback(tag)),
+  onReminderSet: (callback) => ipcRenderer.on('note:reminder-set', (_event, dateStr) => callback(dateStr))
 });

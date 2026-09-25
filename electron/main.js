@@ -1,8 +1,11 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, Notification } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { pipeline, env } = require('@xenova/transformers');
+const chrono = require('chrono-node');
+const schedule = require('node-schedule');
+app.setAppUserModelId('com.sukesh.stickynotes');
 
 env.allowLocalModels = false;
 
@@ -15,6 +18,8 @@ async function loadClassifier() {
     console.error('Failed to load classifier:', error);
   }
 }
+
+const scheduledReminders = new Map();
 
 // JSON file that persists all notes across sessions.
 const storePath = path.join(app.getPath('userData'), 'notes.json');
@@ -96,7 +101,7 @@ function createNoteWindow(id, x, y, text = '', color = 'bg-yellow-200', tag = ''
     y: y,
     frame: false,
     transparent: true,
-    icon: getAppIconPath(),
+    icon: app.isPackaged ? path.join(__dirname, '../dist/icon.ico') : path.join(__dirname, '../public/icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -110,14 +115,14 @@ function createNoteWindow(id, x, y, text = '', color = 'bg-yellow-200', tag = ''
   const encodedTag = encodeURIComponent(tag);
   const queryParams = `noteId=${id}&text=${encodedText}&color=${encodedColor}&tag=${encodedTag}`;
   if (app.isPackaged) {
-      // In production, load the physical HTML file from Vite's build folder
-      win.loadFile(path.join(__dirname, '../dist/index.html'), { search: queryParams });
-    } else {
-      // In development, load the local Vite server
-      win.loadURL(`http://localhost:3000?${queryParams}`);
-    }
+    // In production, load the physical HTML file from Vite's build folder
+    win.loadFile(path.join(__dirname, '../dist/index.html'), { search: queryParams });
+  } else {
+    // In development, load the local Vite server
+    win.loadURL(`http://localhost:3000?${queryParams}`);
+  }
 
-    activeNotes.set(id, win);
+  activeNotes.set(id, win);
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +161,7 @@ app.whenReady().then(() => {
   // Give the app a stable Windows App User Model ID so the taskbar always
   // groups/pins it under our custom icon (not the generic Electron one),
   // both in development and in the packaged build.
-  if (process.platform === 'win32') app.setAppUserModelId('com.stikynotes.app');
+  if (process.platform === 'win32') app.setAppUserModelId('com.stikynotes.app.V1.03');
 
   loadClassifier();
 
@@ -233,6 +238,29 @@ ipcMain.on('note:update', async (_event, id, payload = {}) => {
     });
   }
 
+  if (payload.text !== undefined) {
+    const parsedDate = chrono.parseDate(payload.text);
+    if (parsedDate && parsedDate > new Date()) {
+      if (scheduledReminders.has(id)) {
+        scheduledReminders.get(id).cancel();
+        console.log(`[Timer Cancelled] Previous reminder removed for note: ${id}`);
+      }
+      const newJob = schedule.scheduleJob(parsedDate, () => {
+        new Notification({ title: 'Sticky Note Reminder', body: payload.text }).show();
+      });
+      console.log(`[Timer Set] Reminder scheduled for: ${parsedDate.toLocaleString()}`);
+      scheduledReminders.set(id, newJob);
+
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('note:reminder-set', parsedDate.toLocaleString());
+      }
+    } else if (scheduledReminders.has(id)) {
+      scheduledReminders.get(id).cancel();
+      console.log(`[Timer Cancelled] Previous reminder removed for note: ${id}`);
+      scheduledReminders.delete(id);
+    }
+  }
+
   writeNotes(notes);
 });
 
@@ -258,6 +286,11 @@ ipcMain.on('note:delete', (_event, id) => {
   // 4. Guarantee the registry no longer references this note (the window's
   //    own 'closed' handler also clears it, so this is intentionally idempotent).
   activeNotes.delete(id);
+
+  if (scheduledReminders.has(id)) {
+    scheduledReminders.get(id).cancel();
+    scheduledReminders.delete(id);
+  }
 });
 
 ipcMain.on('note:deleteAll', () => {
